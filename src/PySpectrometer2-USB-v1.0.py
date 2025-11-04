@@ -32,10 +32,29 @@ import numpy as np
 from specFunctions import wavelength_to_rgb,savitzky_golay,peakIndexes,readcal,writecal,background,generateGraticule
 import base64
 import argparse
+import zmq
+import struct
+import zlib
+try:
+    import lz4.frame
+    HAS_LZ4 = True
+except ImportError:
+    HAS_LZ4 = False
+    print("[warning] lz4 not available, compression disabled")
+try:
+    import blake3
+    HAS_BLAKE3 = True
+except ImportError:
+    HAS_BLAKE3 = False
+    print("[warning] blake3 not available, using hashlib")
+    import hashlib
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", type=int, default=0, help="Video Device number e.g. 0, use v4l2-ctl --list-devices")
 parser.add_argument("--fps", type=int, default=30, help="Frame Rate e.g. 30")
+parser.add_argument("--port", type=int, default=5555, help="ZeroMQ streaming port (default: 5555)")
+parser.add_argument("--stream-id", type=int, default=1, help="Stream ID for this spectrometer (default: 1)")
+parser.add_argument("--compress", help="Enable LZ4 compression for streaming",action="store_true")
 group = parser.add_mutually_exclusive_group()
 group.add_argument("--fullscreen", help="Fullscreen (Native 800*480)",action="store_true")
 group.add_argument("--waterfall", help="Enable Waterfall (Windowed only)",action="store_true")
@@ -58,6 +77,66 @@ if args.fps:
 	fps = args.fps
 else:
 	fps = 30
+
+# ZeroMQ Streaming Protocol Constants
+MAGIC = b"HSPC"
+VERSION = 1
+HEADER_SIZE = 64
+
+# ZeroMQ streaming functions
+def compute_wavelength_id(wavelengths_f32):
+	"""Compute unique ID for wavelength calibration"""
+	raw = np.asarray(wavelengths_f32, dtype=np.float32).tobytes()
+	if HAS_BLAKE3:
+		wl_id = blake3.blake3(raw).digest(length=16)
+	else:
+		wl_id = hashlib.md5(raw).digest()  # fallback to md5
+	return wl_id, raw
+
+def build_header(flags, stream_id, frame_idx, t_mono_ns, t_utc_ns, wl_id, n_pixels, sample_bits, payload_len, payload_bytes):
+	"""Build 64-byte binary frame header with CRC32"""
+	header_wo_crc = struct.pack(
+		"<4sB B H I Q Q Q 16s I B 3s I",
+		MAGIC, VERSION, flags, HEADER_SIZE,
+		stream_id, frame_idx, t_mono_ns, t_utc_ns,
+		wl_id, n_pixels, sample_bits, b"\x00\x00\x00", payload_len
+	)
+	crc = zlib.crc32(header_wo_crc + payload_bytes) & 0xFFFFFFFF
+	return header_wo_crc + struct.pack("<I", crc)
+
+def send_calibration_block(sock, wavelengths, stream_id, topic):
+	"""Send wavelength calibration block once at startup"""
+	wl_id, wl_raw = compute_wavelength_id(wavelengths)
+	meta = b'{"model":"PySpectrometer2","device":"USB","version":"1.0"}'
+	calib_payload = wl_raw + meta
+	calib_hdr = build_header(
+		flags=0, stream_id=stream_id, frame_idx=0,
+		t_mono_ns=time.monotonic_ns(), t_utc_ns=time.time_ns(),
+		wl_id=wl_id, n_pixels=len(wavelengths), sample_bits=16,
+		payload_len=len(calib_payload), payload_bytes=calib_payload
+	)
+	sock.send_multipart([topic, calib_hdr + calib_payload], copy=False)
+	return wl_id
+
+def send_intensity_frame(sock, intensity, wl_id, stream_id, frame_idx, topic, use_compression=False):
+	"""Send intensity frame over ZeroMQ"""
+	# Convert intensity to uint16
+	intens_u16 = np.asarray(intensity, dtype=np.uint16)
+	payload = intens_u16.tobytes()
+	flags = 0
+	
+	if use_compression and HAS_LZ4:
+		payload = lz4.frame.compress(payload, block_linked=False, store_size=False)
+		flags |= 0x01  # LZ4 flag
+	
+	hdr = build_header(
+		flags=flags, stream_id=stream_id, frame_idx=frame_idx,
+		t_mono_ns=time.monotonic_ns(), t_utc_ns=time.time_ns(),
+		wl_id=wl_id, n_pixels=len(intens_u16), sample_bits=16,
+		payload_len=len(payload), payload_bytes=payload
+	)
+	
+	sock.send_multipart([topic, hdr + payload], copy=False)
 
 frameWidth = 800
 frameHeight = 600
@@ -143,6 +222,24 @@ wavelengthData = caldata[0]
 calmsg1 = caldata[1]
 calmsg2 = caldata[2]
 calmsg3 = caldata[3]
+
+# Initialize ZeroMQ streaming
+print(f"[info] Initializing ZeroMQ streaming on port {args.port}")
+zmq_context = zmq.Context.instance()
+zmq_sock = zmq_context.socket(zmq.PUB)
+zmq_sock.bind(f"tcp://*:{args.port}")
+zmq_topic = f"hspc.stream.{args.stream_id}".encode()
+stream_frame_idx = 1
+
+# Send calibration block
+print(f"[info] Sending calibration block for stream {args.stream_id}")
+wavelength_id = send_calibration_block(zmq_sock, wavelengthData, args.stream_id, zmq_topic)
+print(f"[info] Wavelength ID: {wavelength_id.hex()}")
+print(f"[info] Compression: {'enabled' if args.compress and HAS_LZ4 else 'disabled'}")
+
+# Calibration resend interval (resend every 5 seconds for new clients)
+calib_resend_interval = 5.0  # seconds
+last_calib_time = time.time()
 
 #generate the craticule data
 graticuleData = generateGraticule(wavelengthData)
@@ -280,6 +377,20 @@ while(cap.isOpened()):
 			cv2.line(graph, (index,319-i), (index,320-i), (0,0,0), 1,cv2.LINE_AA)
 			index+=1
 
+		# Stream intensity data over ZeroMQ
+		try:
+			send_intensity_frame(zmq_sock, intensity, wavelength_id, args.stream_id, 
+			                     stream_frame_idx, zmq_topic, args.compress)
+			stream_frame_idx += 1
+			
+			# Periodically resend calibration block for new clients
+			current_time = time.time()
+			if current_time - last_calib_time >= calib_resend_interval:
+				send_calibration_block(zmq_sock, wavelengthData, args.stream_id, zmq_topic)
+				last_calib_time = current_time
+		except Exception as e:
+			print(f"[warning] ZeroMQ send failed: {e}")
+
 
 		#find peaks and label them
 		textoffset = 12
@@ -406,6 +517,10 @@ while(cap.isOpened()):
 				graticuleData = generateGraticule(wavelengthData)
 				tens = (graticuleData[0])
 				fifties = (graticuleData[1])
+				# Resend calibration block immediately with new wavelength data
+				wavelength_id = send_calibration_block(zmq_sock, wavelengthData, args.stream_id, zmq_topic)
+				last_calib_time = time.time()
+				print(f"[info] Calibration updated and sent to clients")
 		elif keyPress == ord("x"):
 			clickArray = []
 		elif keyPress == ord("m"):
