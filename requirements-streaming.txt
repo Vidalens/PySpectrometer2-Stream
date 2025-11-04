@@ -1,0 +1,15 @@
+# PySpectrometer2 ZeroMQ Streaming Requirements
+# Install with: pip install -r requirements-streaming.txt
+
+pyzmq>=25.0.0
+lz4>=4.0.0
+blake3>=0.3.0
+
+# For the client viewer
+matplotlib>=3.5.0
+numpy>=1.20.0
+
+# Existing dependencies
+opencv-python>=4.5.0
+
+
