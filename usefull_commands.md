@@ -3,17 +3,12 @@ v4l2-ctl --list-devices
 ```
 
 ```bash
+v4l2-ctl --list-formats-ext --device /dev/video0
+```
+
+```bash
 source ~/Documents/PySpectrometer2-Stream/pyspec/bin/activate
 ```
-
-## Running the Spectrometer
-
-**Server (with camera) - full spectrum:**
-```bash
-cd ~/Documents/PySpectrometer2-Stream/src
-python PySpectrometer2-USB-v1.0.py --fullscreen --device 0 --fps 30
-```
-
 **Server with custom wavelength bounds (e.g., 400-700nm):**
 ```bash
 cd ~/Documents/PySpectrometer2-Stream/src

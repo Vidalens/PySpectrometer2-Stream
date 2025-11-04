@@ -156,6 +156,9 @@ print(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 print(cap.get(cv2.CAP_PROP_FPS))
 cfps = (cap.get(cv2.CAP_PROP_FPS))
 
+# Store original camera width for later use
+cameraWidth = frameWidth
+
 
 title1 = 'PySpectrometer 2 - Spectrograph'
 title2 = 'PySpectrometer 2 - Waterfall'
@@ -164,7 +167,7 @@ stackHeight = 320+80+80 #height of the displayed CV window (graph+preview+messag
 if dispWaterfall == True:
 	#watefall first so spectrum is on top
 	cv2.namedWindow(title2,cv2.WINDOW_GUI_NORMAL)
-	cv2.resizeWindow(title2,frameWidth,stackHeight)
+	cv2.resizeWindow(title2,cameraWidth,stackHeight)
 	cv2.moveWindow(title2,200,200);
 
 if dispFullscreen == True:
@@ -172,7 +175,7 @@ if dispFullscreen == True:
 	cv2.setWindowProperty(title1,cv2.WND_PROP_FULLSCREEN,cv2.WINDOW_FULLSCREEN)
 else:
 	cv2.namedWindow(title1,cv2.WINDOW_GUI_NORMAL)
-	cv2.resizeWindow(title1,frameWidth,stackHeight)
+	cv2.resizeWindow(title1,cameraWidth,stackHeight)
 	cv2.moveWindow(title1,0,0);
 
 #settings for peak detect
@@ -214,12 +217,8 @@ recPixels = False #are we measuring pixels and recording clicks?
 msg1 = ""
 saveMsg = "No data saved"
 
-#blank image for Waterfall
-waterfall = np.zeros([320,frameWidth,3],dtype=np.uint8)
-waterfall.fill(0) #fill black
-
 #Go grab the computed calibration data
-caldata = readcal(frameWidth)
+caldata = readcal(cameraWidth)
 wavelengthData_full = caldata[0]
 calmsg1 = caldata[1]
 calmsg2 = caldata[2]
@@ -232,15 +231,28 @@ print(f"\n{'='*60}")
 print(f"[info] Full calibration range: {full_wl_min:.1f} - {full_wl_max:.1f} nm")
 print(f"[info] Full pixel range: 0 - {len(wavelengthData_full)-1} ({len(wavelengthData_full)} pixels)")
 
-# Apply wavelength bounds if specified
+# Apply wavelength bounds if specified, with clamping to available range
+wl_min_requested = args.wl_min
+wl_max_requested = args.wl_max
 wl_min_bound = args.wl_min if args.wl_min is not None else full_wl_min
 wl_max_bound = args.wl_max if args.wl_max is not None else full_wl_max
+
+# Clamp to available range and warn if out of bounds
+if wl_min_bound < full_wl_min:
+	print(f"[warning] Requested min wavelength {wl_min_bound:.1f} nm is below available range")
+	print(f"[warning] Clamping to minimum available: {full_wl_min:.1f} nm")
+	wl_min_bound = full_wl_min
+
+if wl_max_bound > full_wl_max:
+	print(f"[warning] Requested max wavelength {wl_max_bound:.1f} nm is above available range")
+	print(f"[warning] Clamping to maximum available: {full_wl_max:.1f} nm")
+	wl_max_bound = full_wl_max
 
 # Find pixel indices that fall within the wavelength bounds
 valid_indices = [i for i, wl in enumerate(wavelengthData_full) if wl_min_bound <= wl <= wl_max_bound]
 
 if len(valid_indices) == 0:
-	print(f"[error] No wavelengths found in range {wl_min_bound}-{wl_max_bound} nm")
+	print(f"[error] No wavelengths found in range {wl_min_bound:.1f}-{wl_max_bound:.1f} nm")
 	print(f"[error] Available range: {full_wl_min:.1f}-{full_wl_max:.1f} nm")
 	exit(1)
 
@@ -248,16 +260,20 @@ if len(valid_indices) == 0:
 wavelengthData = [wavelengthData_full[i] for i in valid_indices]
 pixel_start = valid_indices[0]
 pixel_end = valid_indices[-1]
-frameWidth = len(wavelengthData)
+displayWidth = len(wavelengthData)
 
-if args.wl_min is not None or args.wl_max is not None:
+if wl_min_requested is not None or wl_max_requested is not None:
 	print(f"[info] *** WAVELENGTH BOUNDS APPLIED ***")
 print(f"[info] Active display range: {wavelengthData[0]:.1f} - {wavelengthData[-1]:.1f} nm")
-print(f"[info] Active pixel range: {pixel_start} - {pixel_end} ({frameWidth} pixels)")
+print(f"[info] Active pixel range: {pixel_start} - {pixel_end} ({displayWidth} pixels)")
 print(f"{'='*60}\n")
 
-# Update intensity array size
-intensity = [0] * frameWidth
+# Update intensity array size to match display width
+intensity = [0] * displayWidth
+
+#blank image for Waterfall (use displayWidth for graph data)
+waterfall = np.zeros([320,displayWidth,3],dtype=np.uint8)
+waterfall.fill(0) #fill black
 
 # Initialize ZeroMQ streaming
 print(f"[info] Initializing ZeroMQ streaming on port {args.port}")
@@ -310,15 +326,15 @@ while(cap.isOpened()):
 		#y=200 	#origin of the vert crop
 		x=0   	#origin of the horiz crop
 		h=80 	#height of the crop
-		w=frameWidth 	#width of the crop
+		w=cameraWidth 	#width of the crop - always use full camera width
 		cropped = frame[y:y+h, x:x+w]
 		bwimage = cv2.cvtColor(cropped,cv2.COLOR_BGR2GRAY)
 		rows,cols = bwimage.shape
 		halfway =int(rows/2)
 		#show our line on the original image
 		#now a 3px wide region
-		cv2.line(cropped,(0,halfway-2),(frameWidth,halfway-2),(255,255,255),1)
-		cv2.line(cropped,(0,halfway+2),(frameWidth,halfway+2),(255,255,255),1)
+		cv2.line(cropped,(0,halfway-2),(cameraWidth,halfway-2),(255,255,255),1)
+		cv2.line(cropped,(0,halfway+2),(cameraWidth,halfway+2),(255,255,255),1)
 
 		#banner image
 		decoded_data = base64.b64decode(background)
@@ -326,8 +342,8 @@ while(cap.isOpened()):
 		img = cv2.imdecode(np_data,3)
 		messages = img
 
-		#blank image for Graph
-		graph = np.zeros([320,frameWidth,3],dtype=np.uint8)
+		#blank image for Graph (use displayWidth for graph)
+		graph = np.zeros([320,displayWidth,3],dtype=np.uint8)
 		graph.fill(255) #fill white
 
 		#Display a graticule calibrated with cal data
@@ -345,11 +361,11 @@ while(cap.isOpened()):
 		for i in range (320):
 			if i>=64:
 				if i%64==0: #suppress the first line then draw the rest...
-					cv2.line(graph,(0,i),(frameWidth,i),(100,100,100),1)
+					cv2.line(graph,(0,i),(displayWidth,i),(100,100,100),1)
 		
 		#Now process the intensity data and display it
 		#intensity = []
-		for i in range(frameWidth):
+		for i in range(displayWidth):
 			# Map display pixel to actual camera pixel
 			camera_pixel = pixel_start + i
 			
@@ -373,7 +389,7 @@ while(cap.isOpened()):
 			#waterfall....
 			#data is smoothed at this point!!!!!!
 			#create an empty array for the data
-			wdata = np.zeros([1,frameWidth,3],dtype=np.uint8)
+			wdata = np.zeros([1,displayWidth,3],dtype=np.uint8)
 			index=0
 			for i in intensity:
 				rgb = wavelength_to_rgb(round(wavelengthData[index]))#derive the color from the wavelenthData array
@@ -476,8 +492,8 @@ while(cap.isOpened()):
 		#stack the images and display the spectrum	
 		spectrum_vertical = np.vstack((messages,cropped, graph))
 		#dividing lines...
-		cv2.line(spectrum_vertical,(0,80),(frameWidth,80),(255,255,255),1)
-		cv2.line(spectrum_vertical,(0,160),(frameWidth,160),(255,255,255),1)
+		cv2.line(spectrum_vertical,(0,80),(cameraWidth,80),(255,255,255),1)
+		cv2.line(spectrum_vertical,(0,160),(cameraWidth,160),(255,255,255),1)
 		#print the messages
 		cv2.putText(spectrum_vertical,calmsg1,(490,15),font,0.4,(0,255,255),1, cv2.LINE_AA)
 		cv2.putText(spectrum_vertical,calmsg3,(490,33),font,0.4,(0,255,255),1, cv2.LINE_AA)
@@ -494,8 +510,8 @@ while(cap.isOpened()):
 			#stack the images and display the waterfall	
 			waterfall_vertical = np.vstack((messages,cropped, waterfall))
 			#dividing lines...
-			cv2.line(waterfall_vertical,(0,80),(frameWidth,80),(255,255,255),1)
-			cv2.line(waterfall_vertical,(0,160),(frameWidth,160),(255,255,255),1)
+			cv2.line(waterfall_vertical,(0,80),(cameraWidth,80),(255,255,255),1)
+			cv2.line(waterfall_vertical,(0,160),(cameraWidth,160),(255,255,255),1)
 			#Draw this stuff over the top of the image!
 			#Display a graticule calibrated with cal data
 			textoffset = 12
@@ -547,7 +563,7 @@ while(cap.isOpened()):
 			if calcomplete:
 				#overwrite wavelength data
 				#Go grab the computed calibration data
-				caldata = readcal(frameWidth)
+				caldata = readcal(cameraWidth)
 				wavelengthData = caldata[0]
 				calmsg1 = caldata[1]
 				calmsg2 = caldata[2]
