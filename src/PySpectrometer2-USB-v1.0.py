@@ -55,6 +55,8 @@ parser.add_argument("--fps", type=int, default=30, help="Frame Rate e.g. 30")
 parser.add_argument("--port", type=int, default=5555, help="ZeroMQ streaming port (default: 5555)")
 parser.add_argument("--stream-id", type=int, default=1, help="Stream ID for this spectrometer (default: 1)")
 parser.add_argument("--compress", help="Enable LZ4 compression for streaming",action="store_true")
+parser.add_argument("--wl-min", type=float, default=None, help="Minimum wavelength to display (nm)")
+parser.add_argument("--wl-max", type=float, default=None, help="Maximum wavelength to display (nm)")
 group = parser.add_mutually_exclusive_group()
 group.add_argument("--fullscreen", help="Fullscreen (Native 800*480)",action="store_true")
 group.add_argument("--waterfall", help="Enable Waterfall (Windowed only)",action="store_true")
@@ -201,7 +203,7 @@ cv2.setMouseCallback(title1,handle_mouse)
 
 font=cv2.FONT_HERSHEY_SIMPLEX
 
-intensity = [0] * frameWidth #array for intensity data...full of zeroes
+# intensity array will be initialized after calibration is loaded and bounds are applied
 
 holdpeaks = False #are we holding peaks?
 measure = False #are we measuring?
@@ -218,10 +220,44 @@ waterfall.fill(0) #fill black
 
 #Go grab the computed calibration data
 caldata = readcal(frameWidth)
-wavelengthData = caldata[0]
+wavelengthData_full = caldata[0]
 calmsg1 = caldata[1]
 calmsg2 = caldata[2]
 calmsg3 = caldata[3]
+
+# Print full calibration range
+full_wl_min = min(wavelengthData_full)
+full_wl_max = max(wavelengthData_full)
+print(f"\n{'='*60}")
+print(f"[info] Full calibration range: {full_wl_min:.1f} - {full_wl_max:.1f} nm")
+print(f"[info] Full pixel range: 0 - {len(wavelengthData_full)-1} ({len(wavelengthData_full)} pixels)")
+
+# Apply wavelength bounds if specified
+wl_min_bound = args.wl_min if args.wl_min is not None else full_wl_min
+wl_max_bound = args.wl_max if args.wl_max is not None else full_wl_max
+
+# Find pixel indices that fall within the wavelength bounds
+valid_indices = [i for i, wl in enumerate(wavelengthData_full) if wl_min_bound <= wl <= wl_max_bound]
+
+if len(valid_indices) == 0:
+	print(f"[error] No wavelengths found in range {wl_min_bound}-{wl_max_bound} nm")
+	print(f"[error] Available range: {full_wl_min:.1f}-{full_wl_max:.1f} nm")
+	exit(1)
+
+# Crop wavelength data to the specified range
+wavelengthData = [wavelengthData_full[i] for i in valid_indices]
+pixel_start = valid_indices[0]
+pixel_end = valid_indices[-1]
+frameWidth = len(wavelengthData)
+
+if args.wl_min is not None or args.wl_max is not None:
+	print(f"[info] *** WAVELENGTH BOUNDS APPLIED ***")
+print(f"[info] Active display range: {wavelengthData[0]:.1f} - {wavelengthData[-1]:.1f} nm")
+print(f"[info] Active pixel range: {pixel_start} - {pixel_end} ({frameWidth} pixels)")
+print(f"{'='*60}\n")
+
+# Update intensity array size
+intensity = [0] * frameWidth
 
 # Initialize ZeroMQ streaming
 print(f"[info] Initializing ZeroMQ streaming on port {args.port}")
@@ -313,13 +349,16 @@ while(cap.isOpened()):
 		
 		#Now process the intensity data and display it
 		#intensity = []
-		for i in range(cols):
+		for i in range(frameWidth):
+			# Map display pixel to actual camera pixel
+			camera_pixel = pixel_start + i
+			
 			#data = bwimage[halfway,i] #pull the pixel data from the halfway mark	
 			#print(type(data)) #numpy.uint8
 			#average the data of 3 rows of pixels:
-			dataminus1 = bwimage[halfway-1,i]
-			datazero = bwimage[halfway,i] #pull the pixel data from the halfway mark
-			dataplus1 = bwimage[halfway+1,i]
+			dataminus1 = bwimage[halfway-1,camera_pixel]
+			datazero = bwimage[halfway,camera_pixel] #pull the pixel data from the halfway mark
+			dataplus1 = bwimage[halfway+1,camera_pixel]
 			data = (int(dataminus1)+int(datazero)+int(dataplus1))/3
 			data = np.uint8(data)
 					

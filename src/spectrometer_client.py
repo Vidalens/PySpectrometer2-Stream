@@ -35,6 +35,12 @@ frame_count = 0
 last_frame_time = time.time()
 fps_estimate = 0.0
 
+# Multi-frame averaging
+frame_buffer = None
+frame_buffer_size = 5  # Number of frames to average
+frame_buffer_idx = 0
+prev_intensity = None  # For spike detection
+
 def parse_header(buf):
     """Parse 68-byte binary frame header (64 bytes + 4 byte CRC)"""
     if len(buf) < FULL_HEADER_SIZE:
@@ -108,9 +114,54 @@ def process_calibration(payload, hdr):
     print(f"[info] Received calibration: {n_pixels} pixels, {wavelengths[0]:.1f}-{wavelengths[-1]:.1f} nm")
     print(f"[info] Wavelength ID: {wavelength_id.hex()}")
 
+def filter_spikes(intensity, prev_intensity):
+    """Filter out single-frame spikes that oscillate between extremes"""
+    if prev_intensity is None:
+        return intensity
+    
+    filtered = intensity.copy()
+    n_pixels = len(intensity)
+    
+    for i in range(n_pixels):
+        current = intensity[i]
+        previous = prev_intensity[i]
+        
+        # Check if current value is at extreme (0-1 or 254-255)
+        is_current_low = current <= 1
+        is_current_high = current >= 254
+        
+        # Check if previous value was at opposite extreme
+        is_prev_low = previous <= 1
+        is_prev_high = previous >= 254
+        
+        # If oscillating between extremes, assume it's a spike (set to 0)
+        if (is_current_low and is_prev_high) or (is_current_high and is_prev_low):
+            filtered[i] = 0
+    
+    return filtered
+
+def average_frames(intensity):
+    """Average multiple frames using a circular buffer"""
+    global frame_buffer, frame_buffer_idx
+    
+    if frame_buffer is None:
+        # Initialize buffer with correct size
+        frame_buffer = np.zeros((frame_buffer_size, len(intensity)), dtype=np.float32)
+        frame_buffer[0] = intensity
+        frame_buffer_idx = 0
+        return intensity  # Return first frame as-is
+    
+    # Add current frame to buffer
+    frame_buffer_idx = (frame_buffer_idx + 1) % frame_buffer_size
+    frame_buffer[frame_buffer_idx] = intensity
+    
+    # Return average of all frames in buffer
+    averaged = np.mean(frame_buffer, axis=0).astype(np.uint16)
+    return averaged
+
 def process_intensity_frame(payload, hdr):
     """Process intensity frame and return intensity array"""
-    global frame_count, last_frame_time, fps_estimate
+    global frame_count, last_frame_time, fps_estimate, prev_intensity
     
     # Decompress if needed
     if hdr['flags'] & 0x01:  # LZ4 flag
@@ -122,17 +173,25 @@ def process_intensity_frame(payload, hdr):
     dtype = np.uint16 if hdr['sample_bits'] == 16 else np.uint32
     intensity = np.frombuffer(payload, dtype=dtype, count=hdr['n_pixels'])
     
-    # Update FPS estimate
+    # Update FPS estimate BEFORE incrementing frame_count
     current_time = time.time()
     if frame_count == 0:
         # Initialize timing on first frame
         last_frame_time = current_time
-    elif frame_count % 10 == 0:
+    elif frame_count > 0 and (frame_count % 10) == 0:
         elapsed = current_time - last_frame_time
-        fps_estimate = 10.0 / elapsed if elapsed > 0 else 0
+        if elapsed > 0:
+            fps_estimate = 10.0 / elapsed
         last_frame_time = current_time
     
     frame_count += 1
+    
+    # Apply spike filtering
+    intensity = filter_spikes(intensity, prev_intensity)
+    prev_intensity = intensity.copy()
+    
+    # Apply multi-frame averaging
+    intensity = average_frames(intensity)
     
     return intensity
 
@@ -183,7 +242,7 @@ def animate(frame, sub, ax, line):
                 
                 # Update plot
                 line.set_data(wavelengths, intensity)
-                ax.set_title(f"PySpectrometer2 - Live Stream (Frame {hdr['frame_idx']}, {fps_estimate:.1f} fps)")
+                ax.set_title(f"PySpectrometer2 - Live Stream (Frame {hdr['frame_idx']}, {fps_estimate:.1f} fps, {frame_buffer_size}-frame avg)")
                 
     except Exception as e:
         print(f"[error] {e}")
@@ -191,12 +250,21 @@ def animate(frame, sub, ax, line):
     return line,
 
 def main():
+    global frame_buffer_size
+    
     parser = argparse.ArgumentParser(description='PySpectrometer2 ZeroMQ Client')
     parser.add_argument("--host", type=str, default="localhost", help="Spectrometer host (default: localhost)")
     parser.add_argument("--port", type=int, default=5555, help="ZeroMQ port (default: 5555)")
     parser.add_argument("--stream-id", type=int, default=1, help="Stream ID to subscribe to (default: 1)")
     parser.add_argument("--save-interval", type=int, default=0, help="Save frames every N seconds (0=disabled)")
+    parser.add_argument("--avg-frames", type=int, default=5, help="Number of frames to average (default: 5)")
+    parser.add_argument("--wl-min", type=float, default=None, help="Minimum wavelength to display (nm)")
+    parser.add_argument("--wl-max", type=float, default=None, help="Maximum wavelength to display (nm)")
     args = parser.parse_args()
+    
+    # Update frame buffer size from command line
+    frame_buffer_size = args.avg_frames
+    print(f"[info] Multi-frame averaging: {frame_buffer_size} frames")
     
     # Initialize ZeroMQ subscriber
     print(f"[info] Connecting to {args.host}:{args.port}")
@@ -226,8 +294,16 @@ def main():
     
     # Initialize plot
     fig, ax, line = init_plot()
-    ax.set_xlim(wavelengths[0], wavelengths[-1])
+    
+    # Apply wavelength bounds if specified
+    wl_min_display = args.wl_min if args.wl_min is not None else wavelengths[0]
+    wl_max_display = args.wl_max if args.wl_max is not None else wavelengths[-1]
+    
+    ax.set_xlim(wl_min_display, wl_max_display)
     ax.set_ylim(0, 255)
+    
+    if args.wl_min is not None or args.wl_max is not None:
+        print(f"[info] Display range: {wl_min_display:.1f}-{wl_max_display:.1f} nm")
     
     # Start animation
     ani = FuncAnimation(fig, animate, fargs=(sub, ax, line), 
