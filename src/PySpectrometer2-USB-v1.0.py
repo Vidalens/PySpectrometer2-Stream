@@ -52,6 +52,9 @@ except ImportError:
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", type=int, default=0, help="Video Device number e.g. 0, use v4l2-ctl --list-devices")
 parser.add_argument("--fps", type=int, default=30, help="Frame Rate e.g. 30")
+parser.add_argument("--width", type=int, default=800, help="Camera resolution width (default: 800)")
+parser.add_argument("--height", type=int, default=600, help="Camera resolution height (default: 600)")
+parser.add_argument("--format", type=str, default="MJPG", choices=["MJPG", "YUYV"], help="Video format (default: MJPG)")
 parser.add_argument("--port", type=int, default=5555, help="ZeroMQ streaming port (default: 5555)")
 parser.add_argument("--stream-id", type=int, default=1, help="Stream ID for this spectrometer (default: 1)")
 parser.add_argument("--compress", help="Enable LZ4 compression for streaming",action="store_true")
@@ -140,21 +143,54 @@ def send_intensity_frame(sock, intensity, wl_id, stream_id, frame_idx, topic, us
 	
 	sock.send_multipart([topic, hdr + payload], copy=False)
 
-frameWidth = 800
-frameHeight = 600
-
+frameWidth = args.width
+frameHeight = args.height
 
 #init video
 cap = cv2.VideoCapture('/dev/video'+str(dev), cv2.CAP_V4L)
 #cap = cv2.VideoCapture(0)
-print("[info] W, H, FPS")
-cap.set(cv2.CAP_PROP_FRAME_WIDTH,frameWidth)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT,frameHeight)
-cap.set(cv2.CAP_PROP_FPS,fps)
-print(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-print(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-print(cap.get(cv2.CAP_PROP_FPS))
-cfps = (cap.get(cv2.CAP_PROP_FPS))
+
+# Set video format
+if args.format == "MJPG":
+	fourcc = cv2.VideoWriter_fourcc('M','J','P','G')
+	cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+	print(f"[info] Requesting MJPG format")
+elif args.format == "YUYV":
+	fourcc = cv2.VideoWriter_fourcc('Y','U','Y','V')
+	cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+	print(f"[info] Requesting YUYV format")
+
+print(f"[info] Requesting resolution: {frameWidth}x{frameHeight} @ {fps} fps")
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, frameWidth)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frameHeight)
+cap.set(cv2.CAP_PROP_FPS, fps)
+
+# Check what we actually got
+actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+actual_fps = cap.get(cv2.CAP_PROP_FPS)
+actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+fourcc_str = "".join([chr((actual_fourcc >> 8 * i) & 0xFF) for i in range(4)])
+
+print(f"\n{'='*60}")
+print(f"[info] Camera initialized:")
+print(f"[info]   Format: {fourcc_str}")
+print(f"[info]   Resolution: {actual_width}x{actual_height}")
+print(f"[info]   Frame rate: {actual_fps:.1f} fps")
+
+# Warn if we didn't get what was requested
+if actual_width != frameWidth or actual_height != frameHeight:
+	print(f"[warning] Requested {frameWidth}x{frameHeight} but got {actual_width}x{actual_height}")
+	print(f"[warning] Using actual camera resolution")
+	frameWidth = actual_width
+	frameHeight = actual_height
+
+if abs(actual_fps - fps) > 1:
+	print(f"[warning] Requested {fps} fps but got {actual_fps:.1f} fps")
+
+print(f"{'='*60}\n")
+
+cfps = actual_fps
 
 # Store original camera width for later use
 cameraWidth = frameWidth
