@@ -387,16 +387,14 @@ while(cap.isOpened()):
 		np_data = np.frombuffer(decoded_data,np.uint8)
 		img = cv2.imdecode(np_data,3)
 		
-		# Keep banner at original size (800px), create black background if camera is wider
+		# Keep banner at original size (800px), left-aligned with black padding on right if needed
 		if cameraWidth > 800:
 			messages = np.zeros([80, cameraWidth, 3], dtype=np.uint8)
-			# Center the logo
-			offset = (cameraWidth - 800) // 2
-			messages[:, offset:offset+800] = img
+			# Left-align the logo
+			messages[:, 0:800] = img
 		elif cameraWidth < 800:
-			# If camera is narrower, crop the logo from center
-			offset = (800 - cameraWidth) // 2
-			messages = img[:, offset:offset+cameraWidth]
+			# If camera is narrower, crop the logo from left
+			messages = img[:, 0:cameraWidth]
 		else:
 			messages = img
 
@@ -482,14 +480,20 @@ while(cap.isOpened()):
 		
 		#now draw the intensity data....
 		index=0
+		# Scale intensity to better fill the graph height (320px)
+		# intensity values are 0-255, scale them to use more vertical space
+		scale_factor = 310.0 / 255.0  # Leave 10px margin at top
+		
 		for i in intensity:
 			rgb = wavelength_to_rgb(round(wavelengthData[index]))#derive the color from the wvalenthData array
 			r = rgb[0]
 			g = rgb[1]
 			b = rgb[2]
+			# Scale intensity value for better vertical display
+			scaled_intensity = int(i * scale_factor)
 			#or some reason origin is top left.
-			cv2.line(graph, (index,320), (index,320-i), (b,g,r), 1)
-			cv2.line(graph, (index,319-i), (index,320-i), (0,0,0), 1,cv2.LINE_AA)
+			cv2.line(graph, (index,320), (index,320-scaled_intensity), (b,g,r), 1)
+			cv2.line(graph, (index,319-scaled_intensity), (index,320-scaled_intensity), (0,0,0), 1,cv2.LINE_AA)
 			index+=1
 
 		# Stream intensity data over ZeroMQ
@@ -514,13 +518,15 @@ while(cap.isOpened()):
 		#print(indexes)
 		for i in indexes:
 			height = intensity[i]
-			height = 310-height
+			# Apply same scaling factor to peak labels
+			scaled_height = int(height * scale_factor)
+			label_y = 320 - scaled_height
 			wavelength = round(wavelengthData[i],1)
-			cv2.rectangle(graph,((i-textoffset)-2,height),((i-textoffset)+60,height-15),(0,255,255),-1)
-			cv2.rectangle(graph,((i-textoffset)-2,height),((i-textoffset)+60,height-15),(0,0,0),1)
-			cv2.putText(graph,str(wavelength)+'nm',(i-textoffset,height-3),font,0.4,(0,0,0),1, cv2.LINE_AA)
+			cv2.rectangle(graph,((i-textoffset)-2,label_y),((i-textoffset)+60,label_y-15),(0,255,255),-1)
+			cv2.rectangle(graph,((i-textoffset)-2,label_y),((i-textoffset)+60,label_y-15),(0,0,0),1)
+			cv2.putText(graph,str(wavelength)+'nm',(i-textoffset,label_y-3),font,0.4,(0,0,0),1, cv2.LINE_AA)
 			#flagpoles
-			cv2.line(graph,(i,height),(i,height+10),(0,0,0),1)
+			cv2.line(graph,(i,label_y),(i,label_y+10),(0,0,0),1)
 
 
 		if measure == True:
@@ -570,6 +576,11 @@ while(cap.isOpened()):
 		cv2.putText(spectrum_vertical,"Savgol Filter: "+str(savpoly),(640,33),font,0.4,(0,255,255),1, cv2.LINE_AA)
 		cv2.putText(spectrum_vertical,"Label Peak Width: "+str(mindist),(640,51),font,0.4,(0,255,255),1, cv2.LINE_AA)
 		cv2.putText(spectrum_vertical,"Label Threshold: "+str(thresh),(640,69),font,0.4,(0,255,255),1, cv2.LINE_AA)
+		
+		# In fullscreen mode, scale to 1920x1080 resolution to fit display properly
+		if dispFullscreen == True:
+			spectrum_vertical = cv2.resize(spectrum_vertical, (1920, 1080), interpolation=cv2.INTER_LINEAR)
+		
 		cv2.imshow(title1,spectrum_vertical)
 
 		if dispWaterfall == True:
