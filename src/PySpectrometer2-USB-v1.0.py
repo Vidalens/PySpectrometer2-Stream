@@ -270,7 +270,17 @@ print(f"[info] Full pixel range: 0 - {len(wavelengthData_full)-1} ({len(waveleng
 # Apply wavelength bounds if specified, with clamping to available range
 wl_min_requested = args.wl_min
 wl_max_requested = args.wl_max
-wl_min_bound = args.wl_min if args.wl_min is not None else full_wl_min
+
+# Automatically crop negative wavelengths (non-physical)
+if full_wl_min < 0:
+	print(f"[info] Calibration includes non-physical negative wavelengths ({full_wl_min:.1f} nm)")
+	print(f"[info] Automatically cropping to start at 0 nm")
+	auto_crop_min = 0.0
+else:
+	auto_crop_min = full_wl_min
+
+# Use user-specified bounds or auto-cropped minimum
+wl_min_bound = args.wl_min if args.wl_min is not None else auto_crop_min
 wl_max_bound = args.wl_max if args.wl_max is not None else full_wl_max
 
 # Clamp to available range and warn if out of bounds
@@ -376,8 +386,19 @@ while(cap.isOpened()):
 		decoded_data = base64.b64decode(background)
 		np_data = np.frombuffer(decoded_data,np.uint8)
 		img = cv2.imdecode(np_data,3)
-		# Resize banner to match camera width
-		messages = cv2.resize(img, (cameraWidth, 80), interpolation=cv2.INTER_LINEAR)
+		
+		# Keep banner at original size (800px), create black background if camera is wider
+		if cameraWidth > 800:
+			messages = np.zeros([80, cameraWidth, 3], dtype=np.uint8)
+			# Center the logo
+			offset = (cameraWidth - 800) // 2
+			messages[:, offset:offset+800] = img
+		elif cameraWidth < 800:
+			# If camera is narrower, crop the logo from center
+			offset = (800 - cameraWidth) // 2
+			messages = img[:, offset:offset+cameraWidth]
+		else:
+			messages = img
 
 		#blank image for Graph (use displayWidth for graph data)
 		graph = np.zeros([320,displayWidth,3],dtype=np.uint8)
