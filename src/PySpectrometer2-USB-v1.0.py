@@ -376,11 +376,14 @@ while(cap.isOpened()):
 		decoded_data = base64.b64decode(background)
 		np_data = np.frombuffer(decoded_data,np.uint8)
 		img = cv2.imdecode(np_data,3)
-		messages = img
+		# Resize banner to match camera width
+		messages = cv2.resize(img, (cameraWidth, 80), interpolation=cv2.INTER_LINEAR)
 
-		#blank image for Graph (use displayWidth for graph)
+		#blank image for Graph (use displayWidth for graph data)
 		graph = np.zeros([320,displayWidth,3],dtype=np.uint8)
 		graph.fill(255) #fill white
+		
+		# If displayWidth != cameraWidth, we'll need to resize the graph later to match camera width for stacking
 
 		#Display a graticule calibrated with cal data
 		textoffset = 12
@@ -525,8 +528,14 @@ while(cap.isOpened()):
 
 	
 
-		#stack the images and display the spectrum	
-		spectrum_vertical = np.vstack((messages,cropped, graph))
+		#stack the images and display the spectrum
+		# Resize graph to camera width if needed for proper stacking
+		if displayWidth != cameraWidth:
+			graph_resized = cv2.resize(graph, (cameraWidth, 320), interpolation=cv2.INTER_LINEAR)
+		else:
+			graph_resized = graph
+			
+		spectrum_vertical = np.vstack((messages,cropped, graph_resized))
 		#dividing lines...
 		cv2.line(spectrum_vertical,(0,80),(cameraWidth,80),(255,255,255),1)
 		cv2.line(spectrum_vertical,(0,160),(cameraWidth,160),(255,255,255),1)
@@ -543,8 +552,14 @@ while(cap.isOpened()):
 		cv2.imshow(title1,spectrum_vertical)
 
 		if dispWaterfall == True:
-			#stack the images and display the waterfall	
-			waterfall_vertical = np.vstack((messages,cropped, waterfall))
+			#stack the images and display the waterfall
+			# Resize waterfall to camera width if needed for proper stacking
+			if displayWidth != cameraWidth:
+				waterfall_resized = cv2.resize(waterfall, (cameraWidth, 320), interpolation=cv2.INTER_LINEAR)
+			else:
+				waterfall_resized = waterfall
+				
+			waterfall_vertical = np.vstack((messages,cropped, waterfall_resized))
 			#dividing lines...
 			cv2.line(waterfall_vertical,(0,80),(cameraWidth,80),(255,255,255),1)
 			cv2.line(waterfall_vertical,(0,160),(cameraWidth,160),(255,255,255),1)
