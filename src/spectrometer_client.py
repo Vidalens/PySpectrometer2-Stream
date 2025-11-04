@@ -123,12 +123,16 @@ def process_intensity_frame(payload, hdr):
     intensity = np.frombuffer(payload, dtype=dtype, count=hdr['n_pixels'])
     
     # Update FPS estimate
-    frame_count += 1
     current_time = time.time()
-    if frame_count % 10 == 0:
+    if frame_count == 0:
+        # Initialize timing on first frame
+        last_frame_time = current_time
+    elif frame_count % 10 == 0:
         elapsed = current_time - last_frame_time
         fps_estimate = 10.0 / elapsed if elapsed > 0 else 0
         last_frame_time = current_time
+    
+    frame_count += 1
     
     return intensity
 
@@ -140,6 +144,8 @@ def init_plot():
     ax.set_ylabel('Intensity')
     ax.set_title('PySpectrometer2 - Live Stream')
     ax.grid(True, alpha=0.3)
+    # Set Y-axis for 8-bit intensity data (0-255 range)
+    ax.set_ylim(0, 255)
     
     return fig, ax, line
 
@@ -161,7 +167,7 @@ def animate(frame, sub, ax, line):
                 # Reinitialize plot with wavelength range
                 if wavelengths is not None:
                     ax.set_xlim(wavelengths[0], wavelengths[-1])
-                    ax.set_ylim(0, 65535)
+                    ax.set_ylim(0, 255)
             else:
                 # Regular intensity frame
                 if wavelengths is None:
@@ -221,7 +227,7 @@ def main():
     # Initialize plot
     fig, ax, line = init_plot()
     ax.set_xlim(wavelengths[0], wavelengths[-1])
-    ax.set_ylim(0, 65535)
+    ax.set_ylim(0, 255)
     
     # Start animation
     ani = FuncAnimation(fig, animate, fargs=(sub, ax, line), 
