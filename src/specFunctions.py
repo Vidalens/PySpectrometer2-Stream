@@ -238,17 +238,37 @@ def peakIndexes(y, thres=0.3, min_dist=1, thres_abs=False):
 	return peaks	
 
 
-def readcal(width):
+def readcal(width, height=None):
 	#read in the calibration points
 	#compute second or third order polynimial, and generate wavelength array!
 	#Les Wright 28 Sept 2022
+	#Modified to support resolution-specific calibration files
 	errors = 0
 	message = 0 #variable to store returned message data
-	try:
-		print("Loading calibration data...")
-		file = open('caldata.txt', 'r')
-	except:
-		errors = 1
+	
+	# Try resolution-specific file first, then fall back to default
+	if height is not None:
+		calfile = f'caldata_{width}x{height}.txt'
+		try:
+			print(f"Loading calibration data for {width}x{height} resolution...")
+			file = open(calfile, 'r')
+			print(f"[info] Using calibration file: {calfile}")
+		except:
+			print(f"[info] No calibration file found for {width}x{height}")
+			print(f"[info] Falling back to caldata.txt")
+			try:
+				file = open('caldata.txt', 'r')
+				calfile = 'caldata.txt'
+			except:
+				errors = 1
+	else:
+		# Legacy support - just use caldata.txt
+		calfile = 'caldata.txt'
+		try:
+			print("Loading calibration data...")
+			file = open(calfile, 'r')
+		except:
+			errors = 1
 
 	try:
 		#read both the pixel numbers and wavelengths into two arrays.
@@ -276,7 +296,7 @@ def readcal(width):
 		errors = 1
 
 	if errors == 1:
-		print("Loading of Calibration data failed (missing caldata.txt or corrupted data!")
+		print(f"Loading of Calibration data failed (missing {calfile} or corrupted data!)")
 		print("Loading placeholder data...")
 		print("You MUST perform a Calibration to use this software!\n\n")
 		pixels = [0,400,800]
@@ -370,7 +390,7 @@ def readcal(width):
 	return returndata
 
 
-def writecal(clickArray):
+def writecal(clickArray, width=None, height=None):
 	calcomplete = False
 	pxdata = []
 	wldata = []
@@ -391,7 +411,16 @@ def writecal(clickArray):
 
 	pxdata = ','.join(map(str, pxdata)) #convert array to string
 	wldata = ','.join(map(str, wldata)) #convert array to string
-	f = open('caldata.txt','w')
+	
+	# Use resolution-specific filename if resolution is provided
+	if width is not None and height is not None:
+		calfile = f'caldata_{width}x{height}.txt'
+		print(f"Writing calibration data to {calfile}")
+	else:
+		calfile = 'caldata.txt'
+		print("Writing calibration data to caldata.txt")
+	
+	f = open(calfile,'w')
 	f.write(pxdata+'\r\n')
 	f.write(wldata+'\r\n')
 	print("Calibration Data Written!")

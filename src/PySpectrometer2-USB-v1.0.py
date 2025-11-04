@@ -254,7 +254,7 @@ msg1 = ""
 saveMsg = "No data saved"
 
 #Go grab the computed calibration data
-caldata = readcal(cameraWidth)
+caldata = readcal(cameraWidth, frameHeight)
 wavelengthData_full = caldata[0]
 calmsg1 = caldata[1]
 calmsg2 = caldata[2]
@@ -595,11 +595,11 @@ while(cap.isOpened()):
 				savedata.append(graphdata)
 			saveMsg = snapshot(savedata)
 		elif keyPress == ord("c"):
-			calcomplete = writecal(clickArray)
+			calcomplete = writecal(clickArray, cameraWidth, frameHeight)
 			if calcomplete:
 				#overwrite wavelength data
 				#Go grab the computed calibration data
-				caldata = readcal(cameraWidth)
+				caldata = readcal(cameraWidth, frameHeight)
 				wavelengthData = caldata[0]
 				calmsg1 = caldata[1]
 				calmsg2 = caldata[2]
